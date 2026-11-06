@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>내 생각 말하기 - 일일 의사표현 및 단어 학습</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/illustrations.css">
+</head>
+<body>
+  <!-- 오터치 방지 쿨다운 프로그레스 오버레이 (상단 고정 바 + 시각 피드백) -->
+  <div id="cooldown-overlay" class="cooldown-overlay hidden" aria-live="polite">
+    <div class="cooldown-banner">
+      <div class="cooldown-header">
+        <span class="cooldown-badge">⏳ 천천히 다음 버튼을 준비해요</span>
+        <span id="cooldown-timer-text" class="cooldown-timer">2.5초</span>
+      </div>
+      <div class="cooldown-track">
+        <div id="cooldown-bar-fill" class="cooldown-fill"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4단계 폭죽 애니메이션용 캔버스 -->
+  <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
+
+  <div class="app-shell">
+    <!-- 상단 고정 영역: 앱 타이틀, 단계 내비게이션, 상시 의사표현 바(Quick AAC), 교사용 설정 -->
+    <header class="top-bar">
+      <div class="brand-and-steps">
+        <div class="brand-box" id="btn-home-reset" title="처음(도입)으로 이동">
+          <span class="brand-logo" aria-hidden="true">💬</span>
+          <div class="brand-titles">
+            <h1 class="app-title">내 생각 말하기</h1>
+            <span id="current-topic-badge" class="topic-pill">오늘의 주제 선택</span>
+          </div>
+        </div>
+
+        <!-- 4단계 진행 루틴 탭 -->
+        <nav class="step-nav" aria-label="수업 단계 이동">
+          <button type="button" class="step-tab active" data-step="0">
+            <span class="step-num">도입</span>
+            <span class="step-name">주제 고르기</span>
+          </button>
+          <button type="button" class="step-tab" data-step="1">
+            <span class="step-num">1단계</span>
+            <span class="step-name">기분·생각</span>
+          </button>
+          <button type="button" class="step-tab" data-step="2">
+            <span class="step-num">2단계</span>
+            <span class="step-name">원하는 것</span>
+          </button>
+          <button type="button" class="step-tab" data-step="3">
+            <span class="step-num">3단계</span>
+            <span class="step-name">따라 쓰기</span>
+          </button>
+          <button type="button" class="step-tab" data-step="4">
+            <span class="step-num">4단계</span>
+            <span class="step-name">발표하기</span>
+          </button>
+        </nav>
+      </div>
+
+      <!-- 상시 의사표현 바 (Quick AAC Bar) & 교사용 설정 버튼 -->
+      <div class="quick-aac-bar" role="region" aria-label="상시 의사표현 바로가기">
+        <div class="quick-aac-buttons">
+          <button type="button" class="quick-aac-btn" data-aac="잠깐만요" data-sentence="잠깐만 기다려 주세요." data-icon="✋" data-color="amber">
+            <span class="aac-emoji" aria-hidden="true">✋</span>
+            <span class="aac-label">잠깐만요</span>
+          </button>
+          <button type="button" class="quick-aac-btn" data-aac="불편해요" data-sentence="몸이 불편해요. 봐주세요." data-icon="😣" data-color="rose">
+            <span class="aac-emoji" aria-hidden="true">😣</span>
+            <span class="aac-label">불편해요</span>
+          </button>
+          <button type="button" class="quick-aac-btn" data-aac="화장실" data-sentence="화장실에 가고 싶어요." data-icon="🚻" data-color="sky">
+            <span class="aac-emoji" aria-hidden="true">🚻</span>
+            <span class="aac-label">화장실</span>
+          </button>
+          <button type="button" class="quick-aac-btn" data-aac="다시 할래요" data-sentence="처음부터 다시 할래요." data-icon="🔄" data-color="emerald">
+            <span class="aac-emoji" aria-hidden="true">🔄</span>
+            <span class="aac-label">다시 할래요</span>
+          </button>
+        </div>
+
+        <div class="util-buttons">
+          <button type="button" id="btn-theme-toggle" class="util-btn" title="다크/파스텔 테마 전환">
+            <span id="theme-icon">🌙</span>
+            <span class="util-text" id="theme-label">다크 대비</span>
+          </button>
+          <button type="button" id="btn-teacher-modal" class="util-btn teacher-btn" title="교사용 설정 및 단어 편집">
+            <span>⚙️</span>
+            <span class="util-text">교사 설정</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 메인 학습 영역: 상단(질문 및 문장 틀) + 하단 절반(초대형 터치 버튼 영역) -->
+    <main id="main-stage" class="main-stage">
+      <!-- 동적으로 단계별 UI가 렌더링됩니다 -->
+    </main>
+  </div>
+
+  <!-- 상시 의사표현(Quick AAC) 즉시 음성 출력 대형 모달 -->
+  <div id="aac-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="aac-modal-word">
+    <div class="aac-modal-card">
+      <div id="aac-modal-icon" class="aac-modal-graphic">✋</div>
+      <h2 id="aac-modal-word" class="aac-modal-title">잠깐만요</h2>
+      <p id="aac-modal-desc" class="aac-modal-sentence">"잠깐만 기다려 주세요."</p>
+      <div class="aac-modal-actions">
+        <button type="button" id="btn-aac-repeat" class="big-action-btn primary-btn">
+          <span>🔊 다시 말하기</span>
+        </button>
+        <button type="button" id="btn-aac-close" class="big-action-btn secondary-btn">
+          <span>✓ 수업으로 돌아가기</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 교사용 간편 편집 및 설정 모달 -->
+  <div id="teacher-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="teacher-modal-title">
+    <div class="teacher-modal-card">
+      <div class="teacher-modal-header">
+        <div>
+          <h2 id="teacher-modal-title" class="teacher-title">⚙️ 교사용 수업 설정 및 어휘 편집</h2>
+          <p class="teacher-subtitle">학생의 손가락 움직임 속도와 오늘 수업할 2~5글자 단어를 맞춤 설정합니다.</p>
+        </div>
+        <button type="button" id="btn-teacher-close" class="close-icon-btn" aria-label="닫기">✕</button>
+      </div>
+
+      <div class="teacher-modal-body">
+        <!-- 1. 접근성 및 터치 반응 설정 -->
+        <section class="teacher-section">
+          <h3 class="section-heading">1. 터치 및 음성 접근성 설정</h3>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <div class="setting-info">
+                <label for="input-cooldown">오터치 방지 쿨다운 시간 (초)</label>
+                <span class="setting-desc">버튼 터치 후 연속 눌림을 막는 시간 (기본 2.5초, 1.0~5.0초)</span>
+              </div>
+              <div class="range-control">
+                <input type="range" id="input-cooldown" min="1.0" max="5.0" step="0.5" value="2.5">
+                <span id="label-cooldown-val" class="range-badge">2.5초</span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <label>선택 터치 방식 (1회 vs 2회 확인)</label>
+                <span class="setting-desc">1회 즉시 선택 또는 1차 터치 시 미리듣기 후 2차 터치로 확정</span>
+              </div>
+              <div class="toggle-group" id="touch-mode-group">
+                <button type="button" class="toggle-opt active" data-mode="single">1회 터치 즉시 선택</button>
+                <button type="button" class="toggle-opt" data-mode="double">2번 터치 (미리듣기 후 확인)</button>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <label for="input-tts-rate">음성 읽기 속도 (TTS Rate)</label>
+                <span class="setting-desc">한국어 음성 출력 속도 (기본 0.85 또박또박 읽기)</span>
+              </div>
+              <div class="range-control">
+                <input type="range" id="input-tts-rate" min="0.6" max="1.1" step="0.05" value="0.85">
+                <span id="label-tts-rate" class="range-badge">0.85배속</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. 도입 화면에 제시할 오늘의 주제 카드 2개 지정 -->
+        <section class="teacher-section">
+          <h3 class="section-heading">2. [도입] 화면에 제시할 오늘의 주제 카드 2개 선택</h3>
+          <p class="section-subdesc">도입 단계 좌우에 큼직하게 표시할 두 가지 주제를 고르거나 바로 특정 주제로 수업을 시작할 수 있습니다.</p>
+          <div class="pair-selector-row">
+            <div class="pair-box">
+              <label for="select-topic-left">왼쪽 주제 카드</label>
+              <select id="select-topic-left" class="teacher-select"></select>
+            </div>
+            <div class="pair-box">
+              <label for="select-topic-right">오른쪽 주제 카드</label>
+              <select id="select-topic-right" class="teacher-select"></select>
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. 주제별 2~5글자 단어 즉시 수정 및 새 주제 추가 -->
+        <section class="teacher-section">
+          <div class="section-header-with-btn">
+            <div>
+              <h3 class="section-heading">3. 주제별 2~5글자 단어 편집 및 새 주제 추가</h3>
+              <p class="section-subdesc">모든 선택지는 학생 인지에 맞춰 2~5글자 이내로 권장합니다. 수정 즉시 브라우저에 자동 저장됩니다.</p>
+            </div>
+            <div class="section-header-actions">
+              <button type="button" id="btn-add-topic" class="small-btn accent-btn">+ 새 주제 추가</button>
+              <button type="button" id="btn-reset-defaults" class="small-btn danger-btn">초기 데이터 복원</button>
+            </div>
+          </div>
+
+          <div class="topic-editor-layout">
+            <div class="topic-list-panel" id="teacher-topic-list">
+              <!-- 주제 목록 렌더링 -->
+            </div>
+            <div class="topic-form-panel" id="teacher-topic-form">
+              <!-- 선택된 주제 상세 편집 폼 -->
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="teacher-modal-footer">
+        <button type="button" id="btn-apply-and-close" class="big-action-btn primary-btn">
+          <span>✓ 설정 저장 후 수업 화면으로</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="illustrations.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
