@@ -1,0 +1,10 @@
+{
+  "name": "내 생각 말하기 - 일일 의사표현 및 단어 학습",
+  "short_name": "내 생각 말하기",
+  "description": "중학교 3학년 뇌성마비 학생을 위한 일일 의사표현 및 단어 학습 안드로이드 태블릿 웹앱",
+  "start_url": "./index.html",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a"
+}
