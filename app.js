@@ -384,14 +384,61 @@ function getTopicParticle(word) {
 
 /* ==========================================================================
    안드로이드 태블릿 미디어 볼륨 직결 HTML5 <audio> 한국어 음성 스트림 엔진
-   + Web Speech API 하이브리드 폴백 시스템
+   + Referrer 차단 우회 + 터치 차임벨(Web Audio) + Web Speech API 하이브리드
    ========================================================================== */
 const HTML5_AUDIO_STREAM_ID = "HTML5_AUDIO_STREAM_KO";
 let currentSpeechTimeoutId = null;
 let activeAudioRequestToken = 0;
+let sharedAudioCtx = null;
+
+/**
+ * 안드로이드 태블릿에서 버튼 터치 즉시 0.01초 내에 미디어 볼륨 채널을 깨우고
+ * 청각적 터치 피드백을 제공하는 부드러운 실로폰 차임 사운드(Web Audio API)를 재생합니다.
+ * - 인터넷이 없거나 TTS 데이터가 아예 없는 기기에서도 터치 즉시 100% 소리가 납니다.
+ */
+function playTouchChime(chimeType = "tap") {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    if (!sharedAudioCtx) {
+      sharedAudioCtx = new AudioContextClass();
+    }
+    if (sharedAudioCtx.state === "suspended") {
+      sharedAudioCtx.resume();
+    }
+
+    const now = sharedAudioCtx.currentTime;
+    const osc = sharedAudioCtx.createOscillator();
+    const gain = sharedAudioCtx.createGain();
+
+    if (chimeType === "success") {
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(523.25, now); // C5
+      osc.frequency.setValueAtTime(659.25, now + 0.07); // E5
+      osc.frequency.setValueAtTime(783.99, now + 0.14); // G5
+      gain.gain.setValueAtTime(0.16, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+      osc.connect(gain);
+      gain.connect(sharedAudioCtx.destination);
+      osc.start(now);
+      osc.stop(now + 0.29);
+    } else {
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(587.33, now); // D5
+      osc.frequency.exponentialRampToValueAtTime(783.99, now + 0.08); // G5
+      gain.gain.setValueAtTime(0.14, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+      osc.connect(gain);
+      gain.connect(sharedAudioCtx.destination);
+      osc.start(now);
+      osc.stop(now + 0.13);
+    }
+  } catch (_) {}
+}
 
 /**
  * HTML5 <audio> 엘리먼트를 반환하거나 없으면 동적으로 생성합니다.
+ * - referrerpolicy="no-referrer"를 강제 지정하여 Google/외부 TTS 서버의 403 Referer 차단을 우회합니다.
  */
 function getKoreanAudioElement() {
   let audioEl = document.getElementById("korean-tts-audio");
@@ -402,6 +449,8 @@ function getKoreanAudioElement() {
     audioEl.setAttribute("playsinline", "");
     document.body.appendChild(audioEl);
   }
+  audioEl.setAttribute("referrerpolicy", "no-referrer");
+  audioEl.referrerPolicy = "no-referrer";
   return audioEl;
 }
 
@@ -412,11 +461,13 @@ function getKoreanAudioElement() {
 function buildKoreanAudioStreamUrls(cleanText) {
   const encoded = encodeURIComponent(cleanText);
   return [
-    // 1차: Google Translate 한국어 신경망 TTS 오디오 스트림 (client=tw-ob)
+    // 1차: Google Translate 한국어 신경망 TTS 스트림 (client=tw-ob)
     `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=ko&client=tw-ob`,
-    // 2차: Google Translate 모바일 클라이언트 스트림 폴백 (client=gtx)
-    `https://translate.googleapis.com/translate_tts?ie=UTF-8&q=${encoded}&tl=ko&client=gtx`,
-    // 3차: Youdao 한국어 보이스 스트림 폴백
+    // 2차: Google Translate 모바일 API 스트림 (client=gtx)
+    `https://translate.googleapis.com/translate_tts?ie=UTF-8&tl=ko&client=gtx&q=${encoded}`,
+    // 3차: Google 한국 도메인 신경망 스트림
+    `https://translate.google.co.kr/translate_tts?ie=UTF-8&q=${encoded}&tl=ko&client=tw-ob`,
+    // 4차: Youdao 한국어 보이스 스트림 폴백
     `https://dict.youdao.com/dictvoice?audio=${encoded}&le=ko`
   ];
 }
@@ -433,8 +484,10 @@ function stopAllKoreanSpeech() {
   try {
     const audioEl = document.getElementById("korean-tts-audio");
     if (audioEl) {
+      audioEl.onended = null;
+      audioEl.onerror = null;
+      audioEl.onloadedmetadata = null;
       audioEl.pause();
-      audioEl.removeAttribute("src");
     }
   } catch (_) {}
 
@@ -500,7 +553,7 @@ function normalizeKoreanTextForTTS(rawText) {
 
 /**
  * HTML5 <audio> 엘리먼트를 통해 태블릿의 일반 '미디어 볼륨'으로 한국어 음성 스트림을 재생합니다.
- * - 스트림 연결 실패(완전 오프라인 환경 등) 시 자동으로 기기 내 Web Speech API로 폴백합니다.
+ * - 사용자 터치 이벤트 콜스택 안에서 즉시 audioEl.play()를 호출하여 안드로이드 Autoplay 차단을 통과합니다.
  */
 function playHtml5KoreanAudioStream(cleanText, requestToken, onEndCallback = null) {
   const audioEl = getKoreanAudioElement();
@@ -508,10 +561,18 @@ function playHtml5KoreanAudioStream(cleanText, requestToken, onEndCallback = nul
   const rawRate = Number(state.settings.ttsRate) || 0.9;
   const playbackRate = Math.max(0.75, Math.min(1.15, rawRate));
 
-  let urlIndex = 0;
   let callbackDone = false;
+  let watchdogTimer = null;
+
+  const clearWatchdog = () => {
+    if (watchdogTimer) {
+      clearTimeout(watchdogTimer);
+      watchdogTimer = null;
+    }
+  };
 
   const finishOnce = () => {
+    clearWatchdog();
     if (!callbackDone && requestToken === activeAudioRequestToken) {
       callbackDone = true;
       if (onEndCallback) onEndCallback();
@@ -519,45 +580,62 @@ function playHtml5KoreanAudioStream(cleanText, requestToken, onEndCallback = nul
   };
 
   const tryPlayUrl = (idx) => {
+    clearWatchdog();
     if (requestToken !== activeAudioRequestToken) return;
     if (idx >= streamUrls.length) {
-      // 모든 스트림이 실패(예: 와이파이 없는 완전 오프라인 상태)하면 로컬 Web Speech API로 즉시 백업 발화
+      // 모든 외부 스트림 연결이 차단되었거나 오프라인이면 로컬 Web Speech API로 즉시 백업 발화
       speakViaWebSpeechFallback(cleanText, requestToken, finishOnce);
       return;
     }
 
-    audioEl.pause();
-    audioEl.src = streamUrls[idx];
-    audioEl.playbackRate = playbackRate;
-    // 속도를 늦춰도 목소리 톤(피치)이 낮아지거나 깨지지 않도록 보존
-    if ("preservesPitch" in audioEl) audioEl.preservesPitch = true;
-    if ("webkitPreservesPitch" in audioEl) audioEl.webkitPreservesPitch = true;
-    audioEl.volume = 1.0;
-
-    audioEl.onloadedmetadata = () => {
-      if (requestToken !== activeAudioRequestToken) return;
+    try {
+      audioEl.referrerPolicy = "no-referrer";
+      audioEl.src = streamUrls[idx];
       audioEl.playbackRate = playbackRate;
-    };
+      if ("preservesPitch" in audioEl) audioEl.preservesPitch = true;
+      if ("webkitPreservesPitch" in audioEl) audioEl.webkitPreservesPitch = true;
+      audioEl.volume = 1.0;
 
-    audioEl.onended = () => {
-      finishOnce();
-    };
+      // 2.2초 내에 스트림 응답이 없으면 즉시 다음 백업 스트림으로 전환
+      watchdogTimer = setTimeout(() => {
+        if (requestToken === activeAudioRequestToken && audioEl.readyState < 2) {
+          tryPlayUrl(idx + 1);
+        }
+      }, 2200);
 
-    audioEl.onerror = () => {
-      if (requestToken !== activeAudioRequestToken) return;
-      tryPlayUrl(idx + 1);
-    };
+      audioEl.onloadeddata = () => {
+        clearWatchdog();
+        if (requestToken !== activeAudioRequestToken) return;
+        audioEl.playbackRate = playbackRate;
+      };
 
-    const playPromise = audioEl.play();
-    if (playPromise !== undefined) {
-      playPromise.catch(() => {
+      audioEl.onended = () => {
+        finishOnce();
+      };
+
+      audioEl.onerror = () => {
+        clearWatchdog();
         if (requestToken !== activeAudioRequestToken) return;
         tryPlayUrl(idx + 1);
-      });
+      };
+
+      const playPromise = audioEl.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          clearWatchdog();
+          if (requestToken !== activeAudioRequestToken) return;
+          // AbortError(새 터치로 인한 정상 취소)가 아닌 경우에만 다음 URL 시도
+          if (err && err.name === "AbortError") return;
+          tryPlayUrl(idx + 1);
+        });
+      }
+    } catch (_) {
+      clearWatchdog();
+      tryPlayUrl(idx + 1);
     }
   };
 
-  tryPlayUrl(urlIndex);
+  tryPlayUrl(0);
 }
 
 /**
@@ -570,6 +648,9 @@ function speakViaWebSpeechFallback(cleanText, requestToken, onEndCallback = null
   }
 
   try {
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+    }
     const utter = new SpeechSynthesisUtterance(cleanText);
     utter.lang = "ko-KR";
     const rawRate = Number(state.settings.ttsRate) || 0.9;
@@ -604,8 +685,8 @@ function speakViaWebSpeechFallback(cleanText, requestToken, onEndCallback = null
 
 /**
  * 앱 전역 한국어 음성 출력 함수
- * - 기본값: 태블릿 내 TTS 설치 여부와 무관하게 일반 '미디어 볼륨'으로 즉시 나오는 HTML5 <audio> 스트림 사용
- * - 교사 설정에서 기기 내장 특정 음성을 선택한 경우 해당 음성으로 동작
+ * - 터치 즉시 부드러운 실로폰 차임 피드백(Web Audio)으로 미디어 채널을 깨운 뒤,
+ *   HTML5 <audio> 한국어 스트림으로 음성을 출력합니다.
  */
 function speakKorean(text, onEndCallback = null) {
   const cleanText = normalizeKoreanTextForTTS(text);
@@ -613,6 +694,9 @@ function speakKorean(text, onEndCallback = null) {
     if (onEndCallback) onEndCallback();
     return;
   }
+
+  // 터치 즉시 미디어 볼륨 채널 활성화 및 경쾌한 터치음 재생
+  playTouchChime("tap");
 
   stopAllKoreanSpeech();
   const currentToken = activeAudioRequestToken;
@@ -623,10 +707,7 @@ function speakKorean(text, onEndCallback = null) {
   if (useHtml5Stream) {
     playHtml5KoreanAudioStream(cleanText, currentToken, onEndCallback);
   } else {
-    currentSpeechTimeoutId = setTimeout(() => {
-      if (currentToken !== activeAudioRequestToken) return;
-      speakViaWebSpeechFallback(cleanText, currentToken, onEndCallback);
-    }, 35);
+    speakViaWebSpeechFallback(cleanText, currentToken, onEndCallback);
   }
 }
 
@@ -870,7 +951,7 @@ function renderStep0Intro(container) {
           }
           card.classList.add("selected-final");
           triggerCooldown(() => {
-            goToStep(1, true);
+            goToStep(1, false);
           });
         }
       });
@@ -978,7 +1059,7 @@ function renderStep1Mood(container) {
           }
           card.classList.add("selected-final");
           triggerCooldown(() => {
-            goToStep(2, true);
+            goToStep(2, false);
           });
         }
       });
@@ -1076,7 +1157,7 @@ function renderStep2Desire(container) {
           }
           card.classList.add("selected-final");
           triggerCooldown(() => {
-            goToStep(3, true);
+            goToStep(3, false);
           });
         }
       });
@@ -1459,7 +1540,7 @@ function renderStep3Writing(container) {
     if (state.isCooldownActive) return;
     speakKorean(`${targetWord} 쓰기 완성! 이제 내 생각을 발표해 볼까요?`);
     triggerCooldown(() => {
-      goToStep(4, true);
+      goToStep(4, false);
     });
   });
 
@@ -1754,8 +1835,9 @@ function renderStep4Presentation(container) {
 
   document.getElementById("btn-restart-routine")?.addEventListener("click", () => {
     if (state.isCooldownActive) return;
+    speakKorean("처음부터 다시 시작할게요.");
     triggerCooldown(() => {
-      goToStep(0, true);
+      goToStep(0, false);
     });
   });
 }

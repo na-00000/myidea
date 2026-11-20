@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -31,8 +32,8 @@
   <!-- 4단계 폭죽 애니메이션용 캔버스 -->
   <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
 
-  <!-- 안드로이드 태블릿 미디어 볼륨 직결 HTML5 <audio> 한국어 음성 스트림 플레이어 -->
-  <audio id="korean-tts-audio" preload="auto" playsinline></audio>
+  <!-- 안드로이드 태블릿 미디어 볼륨 직결 HTML5 <audio> 한국어 음성 스트림 플레이어 (Referrer 차단 우회 필수) -->
+  <audio id="korean-tts-audio" preload="auto" referrerpolicy="no-referrer" playsinline></audio>
 
   <div class="app-shell">
     <!-- 상단 고정 영역: 앱 타이틀, 단계 내비게이션, 상시 의사표현 바(Quick AAC), 교사용 설정 -->
