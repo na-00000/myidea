@@ -31,6 +31,9 @@
   <!-- 4단계 폭죽 애니메이션용 캔버스 -->
   <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
 
+  <!-- 안드로이드 태블릿 미디어 볼륨 직결 HTML5 <audio> 한국어 음성 스트림 플레이어 -->
+  <audio id="korean-tts-audio" preload="auto" playsinline></audio>
+
   <div class="app-shell">
     <!-- 상단 고정 영역: 앱 타이틀, 단계 내비게이션, 상시 의사표현 바(Quick AAC), 교사용 설정 -->
     <header class="top-bar">
@@ -180,11 +183,11 @@
 
             <div class="setting-item">
               <div class="setting-info">
-                <label for="select-tts-voice">한국어 음성 목소리 선택 (Voice)</label>
-                <span class="setting-desc">기기에 설치된 고음질 한국어 음성을 자동으로 우선 선택합니다</span>
+                <label for="select-tts-voice">한국어 음성 엔진 및 목소리 선택 (Audio Stream / Voice)</label>
+                <span class="setting-desc">태블릿에 한국어 TTS가 없어도 일반 '미디어 볼륨'으로 바로 소리가 나는 HTML5 오디오 스트림이 기본 탑재되어 있습니다</span>
               </div>
               <div class="range-control" style="min-width: 280px;">
-                <select id="select-tts-voice" class="teacher-select" style="min-width: 200px;"></select>
+                <select id="select-tts-voice" class="teacher-select" style="min-width: 240px;"></select>
                 <button type="button" id="btn-test-voice" class="small-btn accent-btn" style="white-space:nowrap;">🔊 목소리 테스트</button>
               </div>
             </div>

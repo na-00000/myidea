@@ -261,7 +261,7 @@ const DEFAULT_SETTINGS = {
   cooldownSeconds: 2.5,
   touchMode: "single", // "single" (1회 즉시) | "double" (2번 터치 미리듣기 후 확인)
   ttsRate: 0.9, // 목소리 갈라짐(타임스트레칭 아티팩트) 방지를 위한 자연스러운 속도 기본값
-  preferredVoiceURI: "", // 교사가 지정한 한국어 음성 URI (비어 있으면 최고 음질 자동 선택)
+  preferredVoiceURI: "HTML5_AUDIO_STREAM_KO", // 태블릿 미디어 볼륨 직결 HTML5 <audio> 한국어 음성 스트림 기본 탑재
   theme: "dark", // "dark" | "pastel"
   step1UseTopicWords: true, // true: 10대 주제별 맞춤 1단계 어휘(좋아요/싫어요 포함), false: 4개 고정(좋아요/싫어요/재밌어요/힘들어요)
   introPairIds: ["lunch", "breaktime"]
@@ -307,7 +307,11 @@ function loadFromStorage() {
 
     const savedSettings = localStorage.getItem(STORAGE_KEYS.SETTINGS);
     if (savedSettings) {
-      state.settings = { ...DEFAULT_SETTINGS, ...JSON.parse(savedSettings) };
+      const parsedSettings = JSON.parse(savedSettings);
+      if (!parsedSettings.preferredVoiceURI) {
+        parsedSettings.preferredVoiceURI = "HTML5_AUDIO_STREAM_KO";
+      }
+      state.settings = { ...DEFAULT_SETTINGS, ...parsedSettings };
     } else {
       state.settings = { ...DEFAULT_SETTINGS };
     }
@@ -379,13 +383,70 @@ function getTopicParticle(word) {
 }
 
 /* ==========================================================================
-   Web Speech API 한국어 고음질 TTS 엔진 (목소리 깨짐 방지 & 자연스러운 한국어 억양 최적화)
+   안드로이드 태블릿 미디어 볼륨 직결 HTML5 <audio> 한국어 음성 스트림 엔진
+   + Web Speech API 하이브리드 폴백 시스템
    ========================================================================== */
+const HTML5_AUDIO_STREAM_ID = "HTML5_AUDIO_STREAM_KO";
 let currentSpeechTimeoutId = null;
+let activeAudioRequestToken = 0;
+
+/**
+ * HTML5 <audio> 엘리먼트를 반환하거나 없으면 동적으로 생성합니다.
+ */
+function getKoreanAudioElement() {
+  let audioEl = document.getElementById("korean-tts-audio");
+  if (!audioEl) {
+    audioEl = document.createElement("audio");
+    audioEl.id = "korean-tts-audio";
+    audioEl.preload = "auto";
+    audioEl.setAttribute("playsinline", "");
+    document.body.appendChild(audioEl);
+  }
+  return audioEl;
+}
+
+/**
+ * 한국어 문장에 대한 다중 고음질 HTML5 오디오 스트림 URL 후보 목록을 생성합니다.
+ * - 태블릿에 한국어 TTS 엔진이 설치되어 있지 않아도 유튜브처럼 일반 '미디어 볼륨'으로 즉시 재생됩니다.
+ */
+function buildKoreanAudioStreamUrls(cleanText) {
+  const encoded = encodeURIComponent(cleanText);
+  return [
+    // 1차: Google Translate 한국어 신경망 TTS 오디오 스트림 (client=tw-ob)
+    `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=ko&client=tw-ob`,
+    // 2차: Google Translate 모바일 클라이언트 스트림 폴백 (client=gtx)
+    `https://translate.googleapis.com/translate_tts?ie=UTF-8&q=${encoded}&tl=ko&client=gtx`,
+    // 3차: Youdao 한국어 보이스 스트림 폴백
+    `https://dict.youdao.com/dictvoice?audio=${encoded}&le=ko`
+  ];
+}
+
+/**
+ * 현재 재생 중인 HTML5 <audio> 및 Web Speech API 발화를 모두 안전하게 중지합니다.
+ */
+function stopAllKoreanSpeech() {
+  activeAudioRequestToken++;
+  if (currentSpeechTimeoutId) {
+    clearTimeout(currentSpeechTimeoutId);
+    currentSpeechTimeoutId = null;
+  }
+  try {
+    const audioEl = document.getElementById("korean-tts-audio");
+    if (audioEl) {
+      audioEl.pause();
+      audioEl.removeAttribute("src");
+    }
+  } catch (_) {}
+
+  try {
+    if ("speechSynthesis" in window && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) {
+      window.speechSynthesis.cancel();
+    }
+  } catch (_) {}
+}
 
 /**
  * 기기에 설치된 음성 목록 중 한국어(ko-KR) 음성을 찾아 음질 순위별로 정렬해 반환합니다.
- * (Google 한국의, Microsoft SunHi/InJoon Online Natural, Samsung 고음질 음성 등을 최우선 선택)
  */
 function getRankedKoreanVoices() {
   if (!("speechSynthesis" in window)) return [];
@@ -398,13 +459,10 @@ function getRankedKoreanVoices() {
     let score = 0;
     const name = (v.name || "").toLowerCase();
     const uri = (v.voiceURI || "").toLowerCase();
-    // 1순위: 신경망(Natural / Neural / Online) 고음질 음성
     if (name.includes("natural") || name.includes("neural") || name.includes("online")) score += 50;
-    // 2순위: Google 한국어 음성 및 Microsoft SunHi/InJoon, Apple Yuna, Samsung 음성
     if (name.includes("google") || uri.includes("google")) score += 40;
     if (name.includes("sunhi") || name.includes("injoon") || name.includes("yuna")) score += 35;
     if (name.includes("samsung") || uri.includes("samsung") || uri.includes("smt")) score += 25;
-    // 네트워크 고음질 모델보다 저음질 경량 로컬 폴백이 먼저 잡히는 현상 방지
     if (!name.includes("compact") && !name.includes("espeak")) score += 10;
     if (v.default) score += 5;
     return score;
@@ -417,7 +475,7 @@ function getBestKoreanVoice() {
   const koVoices = getRankedKoreanVoices();
   if (koVoices.length === 0) return null;
 
-  if (state.settings.preferredVoiceURI) {
+  if (state.settings.preferredVoiceURI && state.settings.preferredVoiceURI !== HTML5_AUDIO_STREAM_ID) {
     const matched = koVoices.find((v) => v.voiceURI === state.settings.preferredVoiceURI);
     if (matched) return matched;
   }
@@ -431,84 +489,144 @@ function getBestKoreanVoice() {
 function normalizeKoreanTextForTTS(rawText) {
   if (!rawText) return "";
   let text = String(rawText)
-    // 이모지 및 특수 장식 기호 제거 (TTS가 기호 이름을 읽거나 버퍼가 깨지는 현상 방지)
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, " ")
+    .replace(/\.\./g, ", ")
     .replace(/[·•/]/g, ", ")
     .replace(/\s+/g, " ")
     .trim();
 
-  // 문장 끝 마침표 뒤에 짧은 여백을 두어 어미가 잘리지 않게 처리
   return text;
 }
 
 /**
- * 자연스럽고 목소리가 깨지지 않는 한국어 TTS 출력 함수
- * - cancel() 직후 55ms 오디오 버퍼 안정화 지연을 두어 안드로이드/크롬에서 첫 음절이 찢어지는 현상을 방지합니다.
- * - 과도한 저속 재생 시 발생하는 기계음 왜곡(Time-stretching artifact)을 막기 위해 최적 피치와 속도로 보정합니다.
+ * HTML5 <audio> 엘리먼트를 통해 태블릿의 일반 '미디어 볼륨'으로 한국어 음성 스트림을 재생합니다.
+ * - 스트림 연결 실패(완전 오프라인 환경 등) 시 자동으로 기기 내 Web Speech API로 폴백합니다.
  */
-function speakKorean(text, onEndCallback = null) {
+function playHtml5KoreanAudioStream(cleanText, requestToken, onEndCallback = null) {
+  const audioEl = getKoreanAudioElement();
+  const streamUrls = buildKoreanAudioStreamUrls(cleanText);
+  const rawRate = Number(state.settings.ttsRate) || 0.9;
+  const playbackRate = Math.max(0.75, Math.min(1.15, rawRate));
+
+  let urlIndex = 0;
+  let callbackDone = false;
+
+  const finishOnce = () => {
+    if (!callbackDone && requestToken === activeAudioRequestToken) {
+      callbackDone = true;
+      if (onEndCallback) onEndCallback();
+    }
+  };
+
+  const tryPlayUrl = (idx) => {
+    if (requestToken !== activeAudioRequestToken) return;
+    if (idx >= streamUrls.length) {
+      // 모든 스트림이 실패(예: 와이파이 없는 완전 오프라인 상태)하면 로컬 Web Speech API로 즉시 백업 발화
+      speakViaWebSpeechFallback(cleanText, requestToken, finishOnce);
+      return;
+    }
+
+    audioEl.pause();
+    audioEl.src = streamUrls[idx];
+    audioEl.playbackRate = playbackRate;
+    // 속도를 늦춰도 목소리 톤(피치)이 낮아지거나 깨지지 않도록 보존
+    if ("preservesPitch" in audioEl) audioEl.preservesPitch = true;
+    if ("webkitPreservesPitch" in audioEl) audioEl.webkitPreservesPitch = true;
+    audioEl.volume = 1.0;
+
+    audioEl.onloadedmetadata = () => {
+      if (requestToken !== activeAudioRequestToken) return;
+      audioEl.playbackRate = playbackRate;
+    };
+
+    audioEl.onended = () => {
+      finishOnce();
+    };
+
+    audioEl.onerror = () => {
+      if (requestToken !== activeAudioRequestToken) return;
+      tryPlayUrl(idx + 1);
+    };
+
+    const playPromise = audioEl.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(() => {
+        if (requestToken !== activeAudioRequestToken) return;
+        tryPlayUrl(idx + 1);
+      });
+    }
+  };
+
+  tryPlayUrl(urlIndex);
+}
+
+/**
+ * 오프라인 폴백 또는 교사가 특정 로컬 기기 음성을 수동 지정했을 때 사용하는 Web Speech API 발화기
+ */
+function speakViaWebSpeechFallback(cleanText, requestToken, onEndCallback = null) {
   if (!("speechSynthesis" in window)) {
     if (onEndCallback) setTimeout(onEndCallback, 600);
     return;
   }
 
+  try {
+    const utter = new SpeechSynthesisUtterance(cleanText);
+    utter.lang = "ko-KR";
+    const rawRate = Number(state.settings.ttsRate) || 0.9;
+    utter.rate = Math.max(0.75, Math.min(1.15, rawRate));
+    utter.pitch = 1.02;
+    utter.volume = 1.0;
+
+    const bestVoice = getBestKoreanVoice();
+    if (bestVoice) {
+      utter.voice = bestVoice;
+      utter.lang = bestVoice.lang || "ko-KR";
+    }
+
+    if (onEndCallback) {
+      let called = false;
+      const safeCallback = () => {
+        if (!called && requestToken === activeAudioRequestToken) {
+          called = true;
+          onEndCallback();
+        }
+      };
+      utter.onend = safeCallback;
+      utter.onerror = safeCallback;
+    }
+
+    window.speechSynthesis.speak(utter);
+  } catch (e) {
+    console.warn("Web Speech 폴백 오류:", e);
+    if (onEndCallback) setTimeout(onEndCallback, 500);
+  }
+}
+
+/**
+ * 앱 전역 한국어 음성 출력 함수
+ * - 기본값: 태블릿 내 TTS 설치 여부와 무관하게 일반 '미디어 볼륨'으로 즉시 나오는 HTML5 <audio> 스트림 사용
+ * - 교사 설정에서 기기 내장 특정 음성을 선택한 경우 해당 음성으로 동작
+ */
+function speakKorean(text, onEndCallback = null) {
   const cleanText = normalizeKoreanTextForTTS(text);
   if (!cleanText) {
     if (onEndCallback) onEndCallback();
     return;
   }
 
-  try {
-    if (currentSpeechTimeoutId) {
-      clearTimeout(currentSpeechTimeoutId);
-      currentSpeechTimeoutId = null;
-    }
+  stopAllKoreanSpeech();
+  const currentToken = activeAudioRequestToken;
 
-    // 이전 발화가 진행 중이면 정리한 뒤 오디오 버퍼가 닫힐 시간을 확보(55ms)
-    const wasSpeaking = window.speechSynthesis.speaking || window.speechSynthesis.pending;
-    if (wasSpeaking) {
-      window.speechSynthesis.cancel();
-    }
+  const useHtml5Stream =
+    !state.settings.preferredVoiceURI || state.settings.preferredVoiceURI === HTML5_AUDIO_STREAM_ID;
 
-    const startDelay = wasSpeaking ? 55 : 15;
+  if (useHtml5Stream) {
+    playHtml5KoreanAudioStream(cleanText, currentToken, onEndCallback);
+  } else {
     currentSpeechTimeoutId = setTimeout(() => {
-      try {
-        const utter = new SpeechSynthesisUtterance(cleanText);
-        utter.lang = "ko-KR";
-
-        // 0.85 이하에서 일부 모바일 TTS 엔진이 보코더 떨림을 일으키므로 안전 범위로 매핑
-        const rawRate = Number(state.settings.ttsRate) || 0.9;
-        utter.rate = Math.max(0.75, Math.min(1.15, rawRate));
-        utter.pitch = 1.02; // 또렷하고 따뜻한 톤 유지
-        utter.volume = 1.0;
-
-        const bestVoice = getBestKoreanVoice();
-        if (bestVoice) {
-          utter.voice = bestVoice;
-          utter.lang = bestVoice.lang || "ko-KR";
-        }
-
-        if (onEndCallback) {
-          let called = false;
-          const safeCallback = () => {
-            if (!called) {
-              called = true;
-              onEndCallback();
-            }
-          };
-          utter.onend = safeCallback;
-          utter.onerror = safeCallback;
-        }
-
-        window.speechSynthesis.speak(utter);
-      } catch (innerErr) {
-        console.warn("TTS 발화 오류:", innerErr);
-        if (onEndCallback) setTimeout(onEndCallback, 500);
-      }
-    }, startDelay);
-  } catch (e) {
-    console.warn("TTS 실행 오류:", e);
-    if (onEndCallback) setTimeout(onEndCallback, 600);
+      if (currentToken !== activeAudioRequestToken) return;
+      speakViaWebSpeechFallback(cleanText, currentToken, onEndCallback);
+    }, 35);
   }
 }
 
@@ -1802,15 +1920,10 @@ function initTeacherModal() {
   const populateVoiceSelect = () => {
     if (!selectVoice) return;
     const koVoices = getRankedKoreanVoices();
-    if (koVoices.length === 0) {
-      selectVoice.innerHTML = `<option value="">기기 기본 한국어 음성</option>`;
-      return;
-    }
-    selectVoice.innerHTML = [
-      `<option value="">✨ 최고 음질 자동 선택 (${koVoices[0].name})</option>`,
-      ...koVoices.map((v) => `<option value="${v.voiceURI}">${v.name} (${v.lang})</option>`)
-    ].join("");
-    selectVoice.value = state.settings.preferredVoiceURI || "";
+    const streamOption = `<option value="${HTML5_AUDIO_STREAM_ID}">🔊 태블릿 미디어 오디오 스트림 (기본 탑재·권장)</option>`;
+    const localOptions = koVoices.map((v) => `<option value="${v.voiceURI}">기기 내장 TTS: ${v.name} (${v.lang})</option>`);
+    selectVoice.innerHTML = [streamOption, ...localOptions].join("");
+    selectVoice.value = state.settings.preferredVoiceURI || HTML5_AUDIO_STREAM_ID;
   };
 
   const syncModalControls = () => {
